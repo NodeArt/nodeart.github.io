@@ -723,7 +723,88 @@ import { Observable, Subject } from &#x27;rxjs&#x27;;
 import * as firebase from &#x27;firebase&#x27;;
 /**
  * Vk firebase auth service
+ * &#x60;vk.com&#x60; is not among standard auth providers in firebase, so we provide our own solution for
+ * this. To get acquainted with the flow, please, read [this](https://vk.com/dev/implicit_flow_user) article.
+ *
+ * In order to avoid creation of http server, vkAuthService works only with firebase and not with REST API.
+ * So, we strongly recommend to set redirect url to be a current location, thus one can get a token on a client side.
+ *
+ * Internal work of a service one can found in source tab.
+ *
+ * **Usage:**
+ *
+ * &#x60;VkConfigService&#x60; declaration
+ * &#x60;&#x60;&#x60;typescript
+ * //vkAuthConfig.service.ts
+ *     import {Injectable} from &quot;@angular/core&quot;;
+ *     import {VkAuthConfig, VkConfig, PopupConfig} from &quot;@nodeart/firebase-connector&quot;;
+ *
+ * \@Injectable()
+ *    export class VkConfiguration implements VkAuthConfig {
+ *        public vkConfig : VkConfig &#x3D; {
+ *            client_id: &#x27;app_id&#x27;,
+ *            display: &#x27;popup&#x27;,
+ *            scope: [&#x27;friends&#x27;],
+ *            response_type: &#x27;token&#x27;,
+ *            v: 5.63
+ *        };
+ *        public popupConfig: PopupConfig &#x3D; {
+ *            location: &#x27;no&#x27;,
+ *            height: 600,
+ *            width: 600
+ *        };
+ *        public cleanUp: boolean &#x3D; true;
+ *        public dbPath: string &#x3D; &#x27;auth/vk&#x27;;
+ *        constructor() { }
+ *    }
+ * &#x60;&#x60;&#x60;
+ *
+ * &#x60;VkConfigService&#x60; register
+ *
+ * &#x60;&#x60;&#x60;typescript
+ *         //someModule.module.ts
+ *         import {NgModule} from &quot;@angular/core&quot;;
+ *         import {VkConfiguration} from &quot;./vkAuthConfig.service&quot;;
+ *         \@NgModule({
+ *          providers: [
+ *            {provide: &#x27;VkAuthConfig&#x27;, useClass: VkConfiguration}
+ *          ]
+ *        })
+ *         export class SomeModule { }
+ *         &#x60;&#x60;&#x60;
+ *
+ * Server side or [firebase cloud functions](https://firebase.google.com/docs/functions/) code:
+ * &#x60;&#x60;&#x60;javascript
+ * &#x27;use strict&#x27;;
+ *
+ * const admin &#x3D; require(&#x27;firebase-admin&#x27;);
+ *         const authWithVk &#x3D; admin.database().ref(&#x27;auth/vk&#x27;);
+ *
+ * const listener &#x3D; (ref, snapshot) &#x3D;&gt; {
+ *          const key &#x3D; snapshot.key,
+ *                val &#x3D; snapshot.val();
+ *
+ *          if (!val.processed) {
+ *            admin.auth()
+ *                .createCustomToken(val[&#x27;access_token&#x27;])
+ *                .then(token &#x3D;&gt; {
+ *                  const data &#x3D; Object.assign(val, {
+ *                    access_token: token,
+ *                    expires_in: null,
+ *                    processed: true
+ *                  });
+ *                  ref.child(key).set(data);
+ *                  return data
+ *                })
+ *                .then(data &#x3D;&gt; console.log(&#x60;custom token generated &#x3D; ${JSON.stringify(data)}&#x60;))
+ *          }
+ *        };
+ *
+ * authWithVk.on(&#x27;child_added&#x27;, snapshot &#x3D;&gt; listener(authWithVk, snapshot));
+ * &#x60;&#x60;&#x60;
+ *
  */
+
 @Injectable()
 export class VkAuth implements AuthMethod {
     /**
@@ -797,15 +878,17 @@ export class VkAuth implements AuthMethod {
                  */
                 .catch((err, outputObs) &#x3D;&gt; outputObs)
                 /**
-                 * transfrom hash to object
+                 * transform hash to object
                  */
-                .map(hash &#x3D;&gt; hash.replace(&#x27;#&#x27;, &#x27;&#x27;))
-                .map(params &#x3D;&gt; params.split(&#x27;&amp;&#x27;))
-                .map((arr: Array&lt;string&gt;) &#x3D;&gt; arr.reduce((acc, elem) &#x3D;&gt; {
-                    const [key, val] &#x3D; elem.split(&#x27;&#x3D;&#x27;);
-                    acc[key] &#x3D; val;
-                    return acc;
-                }, {}))
+                .map(hash &#x3D;&gt;
+                    hash.replace(&#x27;#&#x27;, &#x27;&#x27;)
+                        .split(&#x27;&amp;&#x27;)
+                        .reduce((acc, elem) &#x3D;&gt; {
+                            const [key, val] &#x3D; elem.split(&#x27;&#x3D;&#x27;);
+                            acc[decodeURIComponent(key)] &#x3D; decodeURIComponent(val);
+                            return acc;
+                        }, {})
+                )
                 /**
                  * once we have reached subscribe, trigger next on subject and block interval execution
                  */
@@ -865,7 +948,7 @@ export class VkAuth implements AuthMethod {
      * utility function that converts an object to url
      * @returns {string}
      */
-    public createUrl(obj, starter): string {
+    public createUrl(obj : Object, starter?: string): string {
         const join &#x3D; (arr: Array&lt;string&gt;): string &#x3D;&gt; arr.join(&#x27;,&#x27;);
         return Object.keys(obj)
             .reduce(
@@ -874,7 +957,7 @@ export class VkAuth implements AuthMethod {
                         join(obj[key]) :
                         obj[key]
                     }&#x60;,
-                starter
+                starter || &#x27;&#x27;
             )
     }
 }
